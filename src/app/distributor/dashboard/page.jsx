@@ -106,8 +106,8 @@ export default function DistributorDashboard() {
         for (let row of data) {
           const product = {
             name: row.name || row.Name || row.PRODUCT || row.Product,
-            price: parseFloat(row.price || row.Price || row.PRICE || 0),
-            stock: parseInt(row.stock || row.Stock || row.STOCK || row.quantity || 0),
+            selling_price: parseFloat(row.price || row.Price || row.PRICE || row.selling_price || 0),
+            stock_quantity: parseInt(row.stock || row.Stock || row.STOCK || row.quantity || row.stock_quantity || 0),
           };
 
           if (product.name) {
@@ -115,9 +115,16 @@ export default function DistributorDashboard() {
               .from('products')
               .upsert([product], { onConflict: 'name' });
 
-            if (!upsertErr) successCount++;
+            if (upsertErr) {
+              console.error('Supabase upsert error:', upsertErr.message);
+            } else {
+              successCount++;
+            }cd smartorder
+
           }
         }
+
+        setUploadMsg(`Successfully synced ${successCount} products to Supabase!`);
 
         setUploadMsg(`Successfully synced ${successCount} products from Excel!`);
       } catch (err) {
