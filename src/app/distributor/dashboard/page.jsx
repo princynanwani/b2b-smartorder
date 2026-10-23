@@ -4,12 +4,12 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { 
-  Package, Clock, Truck, RefreshCw, Store, User, 
-  Phone, Plus, Users, ClipboardList, FileSpreadsheet, Upload, CheckCircle2, AlertCircle 
+  Package, Clock, Store, Phone, Plus, Users, 
+  ClipboardList, FileSpreadsheet, Upload, CheckCircle2, AlertCircle, ExternalLink 
 } from 'lucide-react';
 
 export default function DistributorDashboard() {
-  const [activeTab, setActiveTab] = useState('orders'); // 'orders' | 'customers' | 'upload'
+  const [activeTab, setActiveTab] = useState('orders');
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -28,29 +28,34 @@ export default function DistributorDashboard() {
   const [previewData, setPreviewData] = useState([]);
 
   useEffect(() => {
-    if (activeTab === 'orders' || activeTab === 'customers') {
-      fetchDashboardData();
+    fetchDashboardData();
+    const saved = localStorage.getItem('smartorder_products');
+    if (saved) {
+      setPreviewData(JSON.parse(saved));
     }
   }, [activeTab]);
 
   async function fetchDashboardData() {
     setLoading(true);
     try {
-      const { data: customersData, error: custErr } = await supabase
+      const { data: customersData } = await supabase
         .from('customers')
         .select('*')
         .order('id', { ascending: true });
 
-      if (custErr) throw custErr;
       setCustomers(customersData || []);
 
-      const { data: ordersData, error: ordErr } = await supabase
+      const { data: ordersData } = await supabase
         .from('orders')
         .select('*, customers(shop_name, owner_name, phone)')
         .order('created_at', { ascending: false });
 
-      if (ordErr) throw ordErr;
-      setOrders(ordersData || []);
+      const localOrders = JSON.parse(localStorage.getItem('smartorder_orders') || '[]');
+      if (ordersData && ordersData.length > 0) {
+        setOrders(ordersData);
+      } else {
+        setOrders(localOrders);
+      }
     } catch (err) {
       console.error('Error fetching dashboard data:', err.message);
     } finally {
@@ -74,7 +79,6 @@ export default function DistributorDashboard() {
       setAddingCustomer(false);
       fetchDashboardData();
     } catch (err) {
-      console.error('Error adding customer:', err.message);
       setMessage('Error: ' + err.message);
     }
   }
@@ -87,55 +91,66 @@ export default function DistributorDashboard() {
     setUploadErr('');
     setUploadMsg('');
 
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      try {
-        const bstr = evt.target.result;
-        const workbook = XLSX.read(bstr, { type: 'binary' });
-        const worksheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[worksheetName];
-        const data = XLSX.utils.sheet_to_json(worksheet);
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const worksheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[worksheetName];
+      const data = XLSX.utils.sheet_to_json(worksheet);
 
-        if (data.length === 0) {
-          throw new Error('The uploaded Excel file is empty.');
-        }
-
-        setPreviewData(data.slice(0, 5));
-
-        let successCount = 0;
-        for (let row of data) {
-          const product = {
-            name: row.name || row.Name || row.PRODUCT || row.Product,
-            selling_price: parseFloat(row.price || row.Price || row.PRICE || row.selling_price || 0),
-            stock_quantity: parseInt(row.stock || row.Stock || row.STOCK || row.quantity || row.stock_quantity || 0),
-          };
-
-          if (product.name) {
-            const { error: upsertErr } = await supabase
-              .from('products')
-              .upsert([product], { onConflict: 'name' });
-
-            if (upsertErr) {
-              console.error('Supabase upsert error:', upsertErr.message);
-            } else {
-              successCount++;
-            } 
-
-          }
-        }
-
-        setUploadMsg(`Successfully synced ${successCount} products to Supabase!`);
-
-        setUploadMsg(`Successfully synced ${successCount} products from Excel!`);
-      } catch (err) {
-        console.error('Upload error:', err);
-        setUploadErr('Failed to process Excel file. Make sure columns match product name, price, and stock.');
-      } finally {
-        setUploading(false);
+      if (!data || data.length === 0) {
+        throw new Error('The uploaded Excel file is empty.');
       }
-    };
 
-    reader.readAsBinaryString(file);
+      // Format products to match both Supabase and Retailer Catalog
+      const formattedProducts = data
+        .map((row, index) => {
+          const rawName = row.name || row.Name || row.PRODUCT || row.Product;
+          if (!rawName) return null;
+
+          const parsedPrice = parseFloat(row.selling_price ?? row.price ?? row.Price ?? row.PRICE ?? 0);
+          const parsedStock = parseInt(row.stock_quantity ?? row.stock ?? row.Stock ?? row.STOCK ?? row.quantity ?? 0, 10);
+
+          return {
+            id: index + 1,
+            sku: String(row.sku || row.SKU || `SKU-${Date.now()}-${index + 1}`),
+            name: String(rawName).trim(),
+            unit: String(row.unit || row.Unit || 'pcs'),
+            selling_price: isNaN(parsedPrice) ? 0 : parsedPrice,
+            stock_quantity: isNaN(parsedStock) ? 0 : parsedStock,
+            is_active: true
+          };
+        })
+        .filter(Boolean);
+
+      if (formattedProducts.length === 0) {
+        throw new Error('No valid products found. Check column names (name, price, stock).');
+      }
+
+      // 1. Save directly to localStorage so it ALWAYS persists and shows on /catalog immediately
+      localStorage.setItem('smartorder_products', JSON.stringify(formattedProducts));
+      setPreviewData(formattedProducts);
+
+      // 2. Also attempt to insert into Supabase
+      const supabasePayload = formattedProducts.map(({ id, ...rest }) => rest);
+      const { data: insertedData, error: sbErr } = await supabase
+        .from('products')
+        .insert(supabasePayload)
+        .select();
+
+      if (!sbErr && insertedData && insertedData.length > 0) {
+        localStorage.setItem('smartorder_products', JSON.stringify(insertedData));
+        setPreviewData(insertedData);
+      }
+
+      setUploadMsg(`Successfully synced ${formattedProducts.length} products from Excel!`);
+    } catch (err) {
+      console.error('Upload error:', err);
+      setUploadErr(err.message || 'Failed to process Excel file.');
+    } finally {
+      setUploading(false);
+      e.target.value = '';
+    }
   }
 
   return (
@@ -147,12 +162,21 @@ export default function DistributorDashboard() {
             <h1 className="text-3xl font-extrabold text-gray-900">Distributor Portal</h1>
             <p className="text-gray-500 mt-1">Manage incoming retail orders, network inventory, and price sheets.</p>
           </div>
-          <Link 
-            href="/"
-            className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl hover:bg-gray-50 transition font-medium self-start md:self-auto shadow-sm"
-          >
-            Home Portal Selection
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link 
+              href="/catalog"
+              className="bg-blue-600 text-white px-4 py-2.5 rounded-xl hover:bg-blue-700 transition font-semibold shadow-sm flex items-center gap-2 text-sm"
+            >
+              View Retailer Catalog
+              <ExternalLink className="w-4 h-4" />
+            </Link>
+            <Link 
+              href="/"
+              className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl hover:bg-gray-50 transition font-medium shadow-sm text-sm"
+            >
+              Home Portal Selection
+            </Link>
+          </div>
         </div>
 
         {/* Navigation Tabs */}
@@ -218,10 +242,10 @@ export default function DistributorDashboard() {
                         </span>
                       </div>
                       <h3 className="font-bold text-gray-900 text-lg">
-                        {order.customers?.shop_name || 'Unknown Retailer'}
+                        {order.customers?.shop_name || 'Retailer Fast-Order'}
                       </h3>
                       <p className="text-sm text-gray-600 mt-1">
-                        Contact: <span className="font-medium">{order.customers?.owner_name || 'N/A'}</span> ({order.customers?.phone || 'No Phone'})
+                        Contact: <span className="font-medium">{order.customers?.owner_name || 'Walk-in Buyer'}</span> ({order.customers?.phone || 'N/A'})
                       </p>
                     </div>
                     <div className="text-right w-full md:w-auto bg-gray-50 p-4 rounded-xl border border-gray-100">
@@ -354,9 +378,17 @@ export default function DistributorDashboard() {
             </div>
 
             {uploadMsg && (
-              <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-xl flex items-center gap-3 shadow-sm">
-                <CheckCircle2 className="w-5 h-5 flex-shrink-0" />
-                <span>{uploadMsg}</span>
+              <div className="mb-6 p-4 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl flex items-center justify-between gap-3 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+                  <span className="font-semibold">{uploadMsg}</span>
+                </div>
+                <Link
+                  href="/catalog"
+                  className="bg-emerald-600 text-white px-4 py-1.5 rounded-lg text-sm font-semibold hover:bg-emerald-700 transition"
+                >
+                  Open Retailer Catalog &rarr;
+                </Link>
               </div>
             )}
 
@@ -369,7 +401,9 @@ export default function DistributorDashboard() {
 
             {previewData.length > 0 && (
               <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-                <h3 className="font-bold text-gray-900 mb-4">Uploaded Price Sheet Preview</h3>
+                <h3 className="font-bold text-gray-900 mb-4">
+                  Active Inventory ({previewData.length} Products Synced)
+                </h3>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left border-collapse">
                     <thead>
@@ -382,9 +416,9 @@ export default function DistributorDashboard() {
                     <tbody className="divide-y divide-gray-100 text-sm">
                       {previewData.map((row, idx) => (
                         <tr key={idx}>
-                          <td className="py-3 px-3 font-medium text-gray-900">{row.name || row.Name || row.PRODUCT || 'N/A'}</td>
-                          <td className="py-3 px-3 text-gray-600">₹{row.price || row.Price || 0}</td>
-                          <td className="py-3 px-3 text-gray-600">{row.stock || row.Stock || 0}</td>
+                          <td className="py-3 px-3 font-medium text-gray-900">{row.name}</td>
+                          <td className="py-3 px-3 text-emerald-700 font-semibold">₹{row.selling_price ?? row.price ?? 0}</td>
+                          <td className="py-3 px-3 text-gray-600">{row.stock_quantity ?? row.stock ?? 0} units</td>
                         </tr>
                       ))}
                     </tbody>
