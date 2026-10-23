@@ -119,7 +119,7 @@ export default function DistributorDashboard() {
               console.error('Supabase upsert error:', upsertErr.message);
             } else {
               successCount++;
-            }cd smartorder
+            } 
 
           }
         }
