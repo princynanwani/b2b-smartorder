@@ -1,14 +1,19 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import * as XLSX from 'xlsx';
 import { 
   Package, Clock, Store, Phone, Plus, Users, 
-  ClipboardList, FileSpreadsheet, Upload, CheckCircle2, AlertCircle, ExternalLink 
+  ClipboardList, FileSpreadsheet, Upload, CheckCircle2, AlertCircle, ExternalLink, LogOut, ShieldAlert 
 } from 'lucide-react';
 
 export default function DistributorDashboard() {
+  const router = useRouter();
+  const [authorized, setAuthorized] = useState(false);
+  const [checkingAuth, setCheckingAuth] = useState(true);
+
   const [activeTab, setActiveTab] = useState('orders');
   const [orders, setOrders] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -27,13 +32,42 @@ export default function DistributorDashboard() {
   const [uploadErr, setUploadErr] = useState('');
   const [previewData, setPreviewData] = useState([]);
 
+  // Role-Based Route Protection: Block Retailers!
   useEffect(() => {
+    const savedUser = localStorage.getItem('smartorder_user');
+    if (!savedUser) {
+      router.replace('/');
+      return;
+    }
+
+    const parsed = JSON.parse(savedUser);
+    if (parsed.role !== 'distributor') {
+      // Retailer is not allowed here! Send them to catalog
+      setAuthorized(false);
+      setCheckingAuth(false);
+      setTimeout(() => {
+        router.replace('/catalog');
+      }, 2000);
+      return;
+    }
+
+    setAuthorized(true);
+    setCheckingAuth(false);
+  }, [router]);
+
+  useEffect(() => {
+    if (!authorized) return;
     fetchDashboardData();
     const saved = localStorage.getItem('smartorder_products');
     if (saved) {
       setPreviewData(JSON.parse(saved));
     }
-  }, [activeTab]);
+  }, [activeTab, authorized]);
+
+  function handleLogout() {
+    localStorage.removeItem('smartorder_user');
+    router.push('/');
+  }
 
   async function fetchDashboardData() {
     setLoading(true);
@@ -102,7 +136,6 @@ export default function DistributorDashboard() {
         throw new Error('The uploaded Excel file is empty.');
       }
 
-      // Format products to match both Supabase and Retailer Catalog
       const formattedProducts = data
         .map((row, index) => {
           const rawName = row.name || row.Name || row.PRODUCT || row.Product;
@@ -127,11 +160,9 @@ export default function DistributorDashboard() {
         throw new Error('No valid products found. Check column names (name, price, stock).');
       }
 
-      // 1. Save directly to localStorage so it ALWAYS persists and shows on /catalog immediately
       localStorage.setItem('smartorder_products', JSON.stringify(formattedProducts));
       setPreviewData(formattedProducts);
 
-      // 2. Also attempt to insert into Supabase
       const supabasePayload = formattedProducts.map(({ id, ...rest }) => rest);
       const { data: insertedData, error: sbErr } = await supabase
         .from('products')
@@ -153,13 +184,46 @@ export default function DistributorDashboard() {
     }
   }
 
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center text-gray-500 font-medium">
+        Verifying Distributor Access...
+      </div>
+    );
+  }
+
+  if (!authorized) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6 text-center">
+        <div className="bg-white p-8 rounded-2xl border border-red-200 shadow-sm max-w-md">
+          <ShieldAlert className="w-12 h-12 text-red-600 mx-auto mb-3" />
+          <h2 className="text-xl font-bold text-gray-900 mb-1">Access Denied</h2>
+          <p className="text-gray-500 text-sm mb-4">
+            Retailer accounts cannot access the Distributor Portal. Redirecting you to the Wholesale Catalog...
+          </p>
+          <Link
+            href="/catalog"
+            className="inline-block bg-blue-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm"
+          >
+            Go to Retailer Catalog
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50 p-6 md:p-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-extrabold text-gray-900">Distributor Portal</h1>
+            <div className="flex items-center gap-2.5">
+              <h1 className="text-3xl font-extrabold text-gray-900">Distributor Portal</h1>
+              <span className="bg-emerald-100 text-emerald-800 text-xs font-bold px-2.5 py-1 rounded-md">
+                ADMIN
+              </span>
+            </div>
             <p className="text-gray-500 mt-1">Manage incoming retail orders, network inventory, and price sheets.</p>
           </div>
           <div className="flex items-center gap-3">
@@ -167,15 +231,16 @@ export default function DistributorDashboard() {
               href="/catalog"
               className="bg-blue-600 text-white px-4 py-2.5 rounded-xl hover:bg-blue-700 transition font-semibold shadow-sm flex items-center gap-2 text-sm"
             >
-              View Retailer Catalog
+              Preview Catalog
               <ExternalLink className="w-4 h-4" />
             </Link>
-            <Link 
-              href="/"
-              className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl hover:bg-gray-50 transition font-medium shadow-sm text-sm"
+            <button
+              onClick={handleLogout}
+              className="bg-white border border-gray-200 text-red-600 px-4 py-2.5 rounded-xl hover:bg-red-50 transition font-medium shadow-sm flex items-center gap-2 text-sm cursor-pointer"
             >
-              Home Portal Selection
-            </Link>
+              <LogOut className="w-4 h-4" />
+              Logout
+            </button>
           </div>
         </div>
 
@@ -245,7 +310,7 @@ export default function DistributorDashboard() {
                         {order.customers?.shop_name || 'Retailer Fast-Order'}
                       </h3>
                       <p className="text-sm text-gray-600 mt-1">
-                        Contact: <span className="font-medium">{order.customers?.owner_name || 'Walk-in Buyer'}</span> ({order.customers?.phone || 'N/A'})
+                        Contact: <span className="font-medium">{order.customers?.owner_name || 'Retail Buyer'}</span> ({order.customers?.phone || 'N/A'})
                       </p>
                     </div>
                     <div className="text-right w-full md:w-auto bg-gray-50 p-4 rounded-xl border border-gray-100">

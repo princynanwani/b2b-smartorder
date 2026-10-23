@@ -1,10 +1,13 @@
 'use client';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-import { ShoppingBag, Search, CheckCircle2, AlertCircle, Plus, Minus, RefreshCw } from 'lucide-react';
+import { ShoppingBag, Search, CheckCircle2, AlertCircle, Plus, Minus, RefreshCw, LogOut, Store } from 'lucide-react';
 
 export default function RetailerCatalogPage() {
+  const router = useRouter();
+  const [currentUser, setCurrentUser] = useState(null);
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -14,14 +17,24 @@ export default function RetailerCatalogPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    const savedUser = localStorage.getItem('smartorder_user');
+    if (!savedUser) {
+      router.replace('/');
+      return;
+    }
+    setCurrentUser(JSON.parse(savedUser));
     fetchProducts();
-  }, []);
+  }, [router]);
+
+  function handleLogout() {
+    localStorage.removeItem('smartorder_user');
+    router.push('/');
+  }
 
   async function fetchProducts() {
     setLoading(true);
     setError('');
     try {
-      // 1. Instantly load synced Excel products from localStorage first
       const localProducts = localStorage.getItem('smartorder_products');
       if (localProducts) {
         const parsed = JSON.parse(localProducts);
@@ -32,7 +45,6 @@ export default function RetailerCatalogPage() {
         }
       }
 
-      // 2. Also check Supabase database
       const { data, error: sbError } = await supabase
         .from('products')
         .select('*')
@@ -105,7 +117,6 @@ export default function RetailerCatalogPage() {
     try {
       const totalAmount = calculateSubtotal();
 
-      // Save order so Distributor Dashboard Orders tab shows it immediately
       const existingOrders = JSON.parse(localStorage.getItem('smartorder_orders') || '[]');
       const newOrder = {
         id: Math.floor(1000 + Math.random() * 9000),
@@ -113,7 +124,11 @@ export default function RetailerCatalogPage() {
         total_amount: totalAmount,
         items: selectedItems,
         created_at: new Date().toISOString(),
-        customers: { shop_name: 'Retailer Fast-Order', owner_name: 'Retail Buyer', phone: '9876543210' }
+        customers: {
+          shop_name: currentUser?.shop_name || 'Retailer Fast-Order',
+          owner_name: currentUser?.shop_name || 'Retail Buyer',
+          phone: currentUser?.phone || 'N/A',
+        },
       };
       localStorage.setItem('smartorder_orders', JSON.stringify([newOrder, ...existingOrders]));
 
@@ -124,7 +139,7 @@ export default function RetailerCatalogPage() {
         },
       ]);
 
-      setMessage(`Order placed successfully for ₹${totalAmount}! Check Distributor Portal Orders.`);
+      setMessage(`Order placed successfully for ₹${totalAmount}!`);
       setQuantities({});
     } catch (err) {
       setMessage(`Order recorded! Total: ₹${calculateSubtotal()}`);
@@ -139,13 +154,21 @@ export default function RetailerCatalogPage() {
       <div className="max-w-7xl mx-auto">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-extrabold text-gray-900">Wholesale Fast-Order</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-extrabold text-gray-900">Wholesale Fast-Order</h1>
+              {currentUser?.shop_name && (
+                <span className="bg-blue-50 text-blue-700 text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1">
+                  <Store className="w-3.5 h-3.5" />
+                  {currentUser.shop_name}
+                </span>
+              )}
+            </div>
             <p className="text-gray-500 mt-1">Browse live inventory and place bulk orders directly.</p>
           </div>
           <div className="flex items-center gap-3">
             <button
               onClick={fetchProducts}
-              className="bg-white border border-gray-200 text-gray-700 p-3 rounded-xl hover:bg-gray-50 transition shadow-sm"
+              className="bg-white border border-gray-200 text-gray-700 p-3 rounded-xl hover:bg-gray-50 transition shadow-sm cursor-pointer"
               title="Refresh Inventory"
             >
               <RefreshCw className="w-5 h-5" />
@@ -157,12 +180,21 @@ export default function RetailerCatalogPage() {
                 <p className="text-lg font-extrabold text-blue-600">₹{calculateSubtotal()}</p>
               </div>
             </div>
-            <Link
-              href="/"
-              className="bg-white border border-gray-200 text-gray-700 px-4 py-2.5 rounded-xl hover:bg-gray-50 transition font-medium shadow-sm"
+            {currentUser?.role === 'distributor' && (
+              <Link
+                href="/distributor/dashboard"
+                className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl hover:bg-emerald-700 transition font-semibold shadow-sm text-sm"
+              >
+                Back to Dashboard
+              </Link>
+            )}
+            <button
+              onClick={handleLogout}
+              className="bg-white border border-gray-200 text-red-600 px-4 py-2.5 rounded-xl hover:bg-red-50 transition font-medium shadow-sm flex items-center gap-2 text-sm cursor-pointer"
             >
-              Home
-            </Link>
+              <LogOut className="w-4 h-4" />
+              Logout
+            </button>
           </div>
         </div>
 
@@ -196,16 +228,10 @@ export default function RetailerCatalogPage() {
         ) : filteredProducts.length === 0 ? (
           <div className="bg-white rounded-2xl p-12 text-center border border-gray-200 shadow-sm">
             <ShoppingBag className="w-12 h-12 text-gray-400 mx-auto mb-3" />
-            <h3 className="text-lg font-bold text-gray-800">No products found</h3>
-            <p className="text-gray-500 text-sm mb-4">
-              Upload an Excel price list from your distributor portal to populate this catalog.
+            <h3 className="text-lg font-bold text-gray-800">No products in catalog yet</h3>
+            <p className="text-gray-500 text-sm">
+              Please wait for the distributor to upload today&apos;s inventory sheet.
             </p>
-            <Link
-              href="/distributor/dashboard"
-              className="inline-flex items-center gap-2 bg-emerald-600 text-white px-5 py-2.5 rounded-xl font-semibold text-sm hover:bg-emerald-700 transition"
-            >
-              Go to Distributor Portal &rarr;
-            </Link>
           </div>
         ) : (
           <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden mb-8">
@@ -265,7 +291,7 @@ export default function RetailerCatalogPage() {
             <button
               onClick={handleCheckout}
               disabled={submitting || calculateSubtotal() === 0}
-              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-bold px-8 py-3.5 rounded-xl transition shadow-sm flex items-center gap-2"
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-bold px-8 py-3.5 rounded-xl transition shadow-sm flex items-center gap-2 cursor-pointer"
             >
               <ShoppingBag className="w-5 h-5" />
               {submitting ? 'Placing Order...' : `Submit Order (₹${calculateSubtotal()})`}
